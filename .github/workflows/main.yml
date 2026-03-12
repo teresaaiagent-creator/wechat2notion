@@ -1,85 +1,77 @@
-name: Sync WeChat RSS to Notion
+name: Sync WeChat Articles to Notion
+
 on:
-  schedule:
-    - cron: '0 1 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *' # 每6小时同步一次
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Node.js
+
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
       - name: Install dependencies
-        run: |
-          npm install rss-parser @notionhq/client
-      - name: Run sync script
+        run: npm install axios cheerio notion-client
+
+      - name: Sync articles
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          RSS_URL: ${{ secrets.RSS_URL }}
+          WECHAT_BIZ: "MzIxNzQ0MzkxMw==" # 你的公众号__biz
         run: |
           node -e "
-          const Parser = require('rss-parser');
-          const { Client } = require('@notionhq/client');
-          const parser = new Parser();
-          const notion = new Client({ auth: process.env.NOTION_TOKEN });
-          async function sync() {
-            // ====== 近15天时间范围（核心修改） ======
-            const startTime = new Date();
-            startTime.setDate(startTime.getDate() - 15); // 只同步近15天的文章
-            const formatDate = (dateStr) => {
-              return new Date(dateStr || new Date());
-            };
-            // ==============================
-            const feed = await parser.parseURL(process.env.RSS_URL);
-            console.log('找到的文章数：', feed.items.length);
-            for (const item of feed.items) {
-              // ====== 时间判断（只留近15天的） ======
-              const pubDate = formatDate(item.pubDate);
-              if (pubDate < startTime) {
-                console.log('文章发布时间太早（超过15天），跳过：', item.title);
-                continue;
-              }
-              // ==============================
-              const search = await notion.databases.query({
-                database_id: process.env.NOTION_DATABASE_ID,
-                filter: {
-                  property: '原文链接',
-                  url: { equals: item.link }
-                }
-              });
-              if (search.results.length > 0) {
-                console.log('文章已存在：', item.title);
-                continue;
-              }
-              await notion.pages.create({
-                parent: { database_id: process.env.NOTION_DATABASE_ID },
-                properties: {
-                  '文章标题': { title: [{ text: { content: item.title } }] },
-                  '发布日期': { date: { start: item.pubDate.split(' ')[0] } },
-                  '原文链接': { url: item.link },
-                  '内容标签': { multi_select: [{ name: '公众号' }] },
-                  '复用状态': { select: { name: '待复用' } }
-                },
-                children: [
-                  {
-                    object: 'block',
-                    type: 'paragraph',
-                    paragraph: {
-                      rich_text: [{ text: { content: item.contentSnippet || '无摘要' } }]
-                    }
-                  }
-                ]
-              });
-              console.log('同步成功：', item.title);
+            const axios = require('axios');
+            const { Client } = require('@notionhq/client');
+
+            // 初始化 Notion 客户端
+            const notion = new Client({ auth: process.env.NOTION_TOKEN });
+            const BIZ = process.env.WECHAT_BIZ;
+            const DATABASE_ID = process.env.NOTION_DATABASE_ID;
+
+            // 1. 抓取公众号文章列表
+            async function fetchArticles() {
+              const url = `https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=${BIZ}&scene=124&devicetype=Windows-QQBrowser&version=61030004&pass_ticket=&wx_header=1`;
+              const res = await axios.get(url);
+              const data = res.data.match(/msgList = '(.*)'/)[1];
+              const msgList = JSON.parse(data.replace(/\\x26amp;/g, '&').replace(/\\x26quot;/g, '"'));
+              
+              return msgList.list.map(item => ({
+                title: item.app_msg_ext_info.title,
+                url: `https://mp.weixin.qq.com/s?__biz=${BIZ}&mid=${item.app_msg_ext_info.mid}&idx=${item.app_msg_ext_info.idx}&sn=${item.app_msg_ext_info.content_url.split('sn=')[1].split('&')[0]}`,
+                date: new Date(item.comm_msg_info.datetime * 1000).toISOString().split('T')[0]
+              }));
             }
-          }
-          sync().catch(err => {
-            console.error('同步失败：', err);
-            process.exit(1);
-          });
+
+            // 2. 同步到 Notion
+            async function syncToNotion(articles) {
+              for (const article of articles) {
+                // 检查是否已存在
+                const existing = await notion.databases.query({
+                  database_id: DATABASE_ID,
+                  filter: { property: 'URL', url: { equals: article.url } }
+                });
+                if (existing.results.length > 0) continue;
+
+                // 创建新页面
+                await notion.pages.create({
+                  parent: { database_id: DATABASE_ID },
+                  properties: {
+                    '标题': { title: [{ text: { content: article.title } }] },
+                    'URL': { url: article.url },
+                    '发布日期': { date: { start: article.date } }
+                  }
+                });
+                console.log('Synced:', article.title);
+              }
+            }
+
+            // 执行同步
+            fetchArticles().then(syncToNotion).catch(console.error);
           "
