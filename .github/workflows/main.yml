@@ -1,0 +1,81 @@
+name: Sync WeChat RSS to Notion
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install rss-parser @notionhq/client
+
+      - name: Run sync script
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          RSS_URL: ${{ secrets.RSS_URL }}
+        run: |
+          node -e "
+          const Parser = require('rss-parser');
+          const { Client } = require('@notionhq/client');
+          const parser = new Parser();
+          const notion = new Client({ auth: process.env.NOTION_TOKEN });
+
+          async function sync() {
+            const feed = await parser.parseURL(process.env.RSS_URL);
+            console.log('获取到文章数：', feed.items.length);
+
+            for (const item of feed.items) {
+              const search = await notion.databases.query({
+                database_id: process.env.NOTION_DATABASE_ID,
+                filter: {
+                  property: '原文链接',
+                  url: { equals: item.link }
+                }
+              });
+
+              if (search.results.length > 0) {
+                console.log('文章已存在：', item.title);
+                continue;
+              }
+
+              await notion.pages.create({
+                parent: { database_id: process.env.NOTION_DATABASE_ID },
+                properties: {
+                  '文章标题': { title: [{ text: { content: item.title } }] },
+                  '发布日期': { date: { start: item.pubDate.split(' ')[0] } },
+                  '原文链接': { url: item.link },
+                  '内容标签': { multi_select: [{ name: '公众号' }] },
+                  '复用状态': { select: { name: '待复用' } }
+                },
+                children: [
+                  {
+                    object: 'block',
+                    type: 'paragraph',
+                    paragraph: {
+                      rich_text: [{ text: { content: item.contentSnippet || '无摘要' } }]
+                    }
+                  }
+                ]
+              });
+              console.log('同步成功：', item.title);
+            }
+          }
+
+          sync().catch(err => {
+            console.error('同步失败：', err);
+            process.exit(1);
+          });
+          "
