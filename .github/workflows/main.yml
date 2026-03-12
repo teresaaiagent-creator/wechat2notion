@@ -12,7 +12,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -28,85 +28,82 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           WECHAT_BIZ: "MzIxNzQ0MzkxMw==" # 你的公众号__biz
         run: |
-          python - << 'EOF'
-import os
-import requests
-import json
-import re
-from datetime import datetime
-from notion_client import Client
+          python << 'EOF'
+          import os
+          import requests
+          import json
+          import re
+          from datetime import datetime
+          from notion_client import Client
 
-# 正确读取环境变量
-NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
-NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
-WECHAT_BIZ = os.environ.get("WECHAT_BIZ")
+          # 读取环境变量
+          NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
+          NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
+          WECHAT_BIZ = os.environ.get("WECHAT_BIZ")
 
-# 初始化 Notion
-notion = Client(auth=NOTION_TOKEN)
+          # 初始化 Notion 客户端
+          notion = Client(auth=NOTION_TOKEN)
 
-# 抓取公众号文章列表
-def fetch_wechat_articles():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    url = f"https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz={WECHAT_BIZ}&scene=124"
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.raise_for_status()
-        # 提取 msgList
-        match = re.search(r"msgList = '(.*?)'", res.text)
-        if not match:
-            print("⚠️ 未找到文章列表，可能是接口格式变更")
-            return []
-        msg_list_str = match.group(1).replace("\\x26amp;", "&").replace("\\x26quot;", '"')
-        msg_list = json.loads(msg_list_str)
-        articles = []
-        for item in msg_list.get("list", []):
-            app_msg = item.get("app_msg_ext_info")
-            if not app_msg:
-                continue
-            articles.append({
-                "title": app_msg["title"],
-                "url": f"https://mp.weixin.qq.com/s?__biz={WECHAT_BIZ}&mid={app_msg['mid']}&idx={app_msg['idx']}&sn={app_msg['content_url'].split('sn=')[1].split('&')[0]}",
-                "date": datetime.fromtimestamp(item["comm_msg_info"]["datetime"]).strftime("%Y-%m-%d")
-            })
-        return articles
-    except Exception as e:
-        print(f"❌ 抓取文章失败: {e}")
-        return []
+          # 抓取公众号文章
+          def fetch_wechat_articles():
+              headers = {
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+              }
+              url = f"https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz={WECHAT_BIZ}&scene=124"
+              try:
+                  res = requests.get(url, headers=headers, timeout=10)
+                  res.raise_for_status()
+                  match = re.search(r"msgList = '(.*?)'", res.text)
+                  if not match:
+                      print("⚠️ 未找到文章列表")
+                      return []
+                  msg_list_str = match.group(1).replace("\\x26amp;", "&").replace("\\x26quot;", '"')
+                  msg_list = json.loads(msg_list_str)
+                  articles = []
+                  for item in msg_list.get("list", []):
+                      app_msg = item.get("app_msg_ext_info")
+                      if not app_msg:
+                          continue
+                      articles.append({
+                          "title": app_msg["title"],
+                          "url": f"https://mp.weixin.qq.com/s?__biz={WECHAT_BIZ}&mid={app_msg['mid']}&idx={app_msg['idx']}&sn={app_msg['content_url'].split('sn=')[1].split('&')[0]}",
+                          "date": datetime.fromtimestamp(item["comm_msg_info"]["datetime"]).strftime("%Y-%m-%d")
+                      })
+                  return articles
+              except Exception as e:
+                  print(f"❌ 抓取失败: {e}")
+                  return []
 
-# 同步到 Notion
-def sync_to_notion(articles):
-    if not articles:
-        print("ℹ️ 没有新文章需要同步")
-        return
-    for article in articles:
-        try:
-            # 检查是否已存在
-            existing = notion.databases.query(
-                database_id=NOTION_DATABASE_ID,
-                filter={"property": "URL", "url": {"equals": article["url"]}}
-            )
-            if existing.results:
-                print(f"ℹ️ 已存在: {article['title']}")
-                continue
-            # 创建新页面
-            notion.pages.create(
-                parent={"database_id": NOTION_DATABASE_ID},
-                properties={
-                    "标题": {"title": [{"text": {"content": article["title"]}}]},
-                    "URL": {"url": article["url"]},
-                    "发布日期": {"date": {"start": article["date"]}}
-                }
-            )
-            print(f"✅ 已同步: {article['title']}")
-        except Exception as e:
-            print(f"❌ 同步 {article['title']} 失败: {e}")
+          # 同步到 Notion
+          def sync_to_notion(articles):
+              if not articles:
+                  print("ℹ️ 无新文章")
+                  return
+              for article in articles:
+                  try:
+                      existing = notion.databases.query(
+                          database_id=NOTION_DATABASE_ID,
+                          filter={"property": "URL", "url": {"equals": article["url"]}}
+                      )
+                      if existing.results:
+                          print(f"ℹ️ 已存在: {article['title']}")
+                          continue
+                      notion.pages.create(
+                          parent={"database_id": NOTION_DATABASE_ID},
+                          properties={
+                              "标题": {"title": [{"text": {"content": article["title"]}}]},
+                              "URL": {"url": article["url"]},
+                              "发布日期": {"date": {"start": article["date"]}}
+                          }
+                      )
+                      print(f"✅ 已同步: {article['title']}")
+                  except Exception as e:
+                      print(f"❌ 同步失败: {article['title']} -> {e}")
 
-if __name__ == "__main__":
-    if not all([NOTION_TOKEN, NOTION_DATABASE_ID, WECHAT_BIZ]):
-        print("❌ 环境变量未正确配置，请检查 GitHub Secrets")
-        exit(1)
-    articles = fetch_wechat_articles()
-    sync_to_notion(articles)
-EOF
+          if __name__ == "__main__":
+              if not all([NOTION_TOKEN, NOTION_DATABASE_ID, WECHAT_BIZ]):
+                  print("❌ 环境变量缺失")
+                  exit(1)
+              articles = fetch_wechat_articles()
+              sync_to_notion(articles)
+          EOF
