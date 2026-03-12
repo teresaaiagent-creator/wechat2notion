@@ -25,7 +25,7 @@ jobs:
       - name: Sync articles to Notion
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_DATABASE_ID:  "3210b2243ef580929ab9f5a5921e8371"
           WECHAT_BIZ: "MzIxNzQ0MzkxMw==" # 你的公众号__biz
         run: |
           python << 'EOF'
